@@ -18,7 +18,14 @@ use crate::core::production::Producer;
 use crate::cli::interface;
 use crate::core::{engine, production};
 
-pub fn main() -> anyhow::Result<()> {
+/// Store the item somewhere and return the path of the file
+async fn serialize(producer: Box<dyn Producer>, ident: &str) -> anyhow::Result<String> {
+
+    todo!()
+}
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let env = Env::default().filter_or("LOG_LEVEL", "info");
     pretty_env_logger::formatted_timed_builder()
         .parse_env(env)
@@ -27,7 +34,7 @@ pub fn main() -> anyhow::Result<()> {
     interface::banner();
     let cli_args = interface::args();
 
-    let producer: Box<dyn Producer> = match cli_args.subcommand {
+    let mut producer: Box<dyn Producer> = match cli_args.subcommand {
         interface::Method::Wordlist(args) => {
             let producer = LineProducer::from(&args.wordlist);
             Box::from(producer)
@@ -61,11 +68,21 @@ pub fn main() -> anyhow::Result<()> {
 
     let filename = cli_args.filename;
 
-    engine::crack_file(
-        cli_args.number_of_threads,
-        PDFCracker::from_file(&filename).context(format!("path: {}", filename))?,
-        producer,
-    )?;
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            info!("Received cancellation signal. Saving session...");
+            serialize(producer, "ident").await?;
+        }
+        res = engine::crack_file(
+            cli_args.number_of_threads,
+            PDFCracker::from_file(&filename).context(format!("path: {}", filename))?,
+            &mut producer,
+        ) => {
+            res?;
+            info!("Done");
+        }
+    };
+
 
     Ok(())
 }

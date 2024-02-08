@@ -11,12 +11,18 @@ use indicatif::{ProgressBar, ProgressStyle};
 use crate::core::production::Producer;
 
 use super::cracker::pdf::PDFCracker;
+use tokio::sync::broadcast;
 
-pub fn crack_file(
+
+pub async fn crack_file(
     no_workers: usize,
     cracker: PDFCracker,
-    mut producer: Box<dyn Producer>,
+    producer: &mut Box<dyn Producer>,
 ) -> anyhow::Result<()> {
+
+    let (sender, r) = broadcast::channel::<Vec<u8>>(BUFFER_SIZE);
+
+    todo!("Following stuff is kinda trash for now");
     // Spin up workers
     let (sender, r): (Sender<Vec<u8>>, Receiver<_>) = crossbeam::channel::bounded(BUFFER_SIZE);
 
