@@ -5,119 +5,87 @@ const BUFFER_SIZE: usize = 200;
 
 use std::sync::Arc;
 
-use crossbeam::channel::{Receiver, Sender, TryRecvError};
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::core::production::Producer;
 
 use super::cracker::pdf::PDFCracker;
 use tokio::sync::broadcast;
+use tokio_util::task::TaskTracker;
 
+async fn worker(
+    cracker: Arc<PDFCracker>,
+    success: broadcast::Sender<Vec<u8>>,
+    mut source: broadcast::Receiver<Vec<u8>>,
+) {
+    while let Ok(passwd) = source.recv().await {
+        if cracker.attempt(&passwd) {
+            // inform main thread we found a good password then die
+            success.send(passwd).unwrap_or_default();
+            return;
+        }
+    }
+}
+
+async fn producer(
+    producer: &mut Box<dyn Producer>,
+    sender: broadcast::Sender<Vec<u8>>,
+    progress: &ProgressBar,
+) {
+    while let Ok(x) = producer.next() {
+        if let Some(password) = x {
+            if let Err(_) = sender.send(password) {
+                // This should only happen if their receiver is closed.
+                error!("unable to send next password since channel is closed");
+            }
+            progress.inc(1);
+        } else {
+            trace!("Out of passwords.")
+        }
+    }
+    todo!()
+}
+
+// Our async method allows us to select! on a password producer and our result channel :o
 
 pub async fn crack_file(
     no_workers: usize,
     cracker: PDFCracker,
     producer: &mut Box<dyn Producer>,
 ) -> anyhow::Result<()> {
+    // Open channels we use to send passwords to workers
 
-    let (sender, r) = broadcast::channel::<Vec<u8>>(BUFFER_SIZE);
-
-    todo!("Following stuff is kinda trash for now");
-    // Spin up workers
-    let (sender, r): (Sender<Vec<u8>>, Receiver<_>) = crossbeam::channel::bounded(BUFFER_SIZE);
-
-    let (success_sender, success_reader) = crossbeam::channel::unbounded::<Vec<u8>>();
-    let mut handles = vec![];
+    let sender = broadcast::Sender::<Vec<u8>>::new(BUFFER_SIZE);
+    // Open channels that the workers will send their successes from
+    let (success_sender, success_reader) = broadcast::channel::<Vec<u8>>(no_workers);
+    let workers = TaskTracker::default();
     let cracker_handle = Arc::from(cracker);
 
     for _ in 0..no_workers {
-        let success = success_sender.clone();
-        let r2 = r.clone();
-        let c2 = cracker_handle.clone();
-        let id: std::thread::JoinHandle<()> = std::thread::spawn(move || {
-            while let Ok(passwd) = r2.recv() {
-                if c2.attempt(&passwd) {
-                    // inform main thread we found a good password then die
-                    success.send(passwd).unwrap_or_default();
-                    return;
-                }
-            }
-        });
-        handles.push(id);
+        workers.spawn(worker(
+            cracker_handle.clone(),
+            success_sender.clone(),
+            sender.subscribe(),
+        ));
     }
-    // Drop our ends
-    drop(r);
+    // We wont be starting more workers
+    workers.close();
+    // Drop our end of the password sender. We dont need it
     drop(success_sender);
 
     info!("Starting password cracking job...");
 
-    let mut success = None;
 
     let progress_bar = ProgressBar::new(producer.size() as u64);
     progress_bar.set_draw_delta(1000);
     progress_bar.set_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos:>7}/{len:7} {percent}% {per_sec} ETA: {eta}"));
 
-    loop {
-        match success_reader.try_recv() {
-            Ok(password) => {
-                success = Some(password);
-                break;
-            }
-            Err(e) => {
-                match e {
-                    TryRecvError::Empty => {
-                        // This is fine *lit*
-                    }
-                    TryRecvError::Disconnected => {
-                        // All threads have died. Wtf?
-                        // let's just report an error and break
-                        error!("All workers have exited prematurely, cannot continue operations");
-                        break;
-                    }
-                }
-            }
-        }
 
-        match producer.next() {
-            Ok(Some(password)) => {
-                if let Err(_) = sender.send(password) {
-                    // This should only happen if their reciever is closed.
-                    error!("unable to send next password since channel is closed");
-                }
-                progress_bar.inc(1);
-            }
-            Ok(None) => {
-                trace!("out of passwords, exiting loop");
-                break;
-            }
-            Err(error_msg) => {
-                error!("error occured while sending: {error_msg}");
-                break;
-            }
-        }
-    }
-
-    // Ensure any threads that are still running will eventually exit
-    drop(sender);
-
-    let found_password = match success {
-        Some(result) => Some(result),
-        None => {
-            match success_reader.recv() {
-                Ok(result) => Some(result),
-                Err(e) => {
-                    // Channel is empty and disconnected, i.e. all threads have exited
-                    // and none found the password
-                    debug!("{}", e);
-                    None
-                }
-            }
-        }
-    };
 
     progress_bar.finish();
-
+    let found_password = Some(vec![1,2,3]);
+    
     match found_password {
         Some(password) => match std::str::from_utf8(&password) {
             Ok(password) => {

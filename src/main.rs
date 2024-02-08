@@ -18,11 +18,6 @@ use crate::core::production::Producer;
 use crate::cli::interface;
 use crate::core::{engine, production};
 
-/// Store the item somewhere and return the path of the file
-async fn serialize(producer: Box<dyn Producer>, ident: &str) -> anyhow::Result<String> {
-
-    todo!()
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -71,7 +66,6 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             info!("Received cancellation signal. Saving session...");
-            serialize(producer, "ident").await?;
         }
         res = engine::crack_file(
             cli_args.number_of_threads,
@@ -82,7 +76,6 @@ async fn main() -> anyhow::Result<()> {
             info!("Done");
         }
     };
-
 
     Ok(())
 }
