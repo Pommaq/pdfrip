@@ -45,8 +45,51 @@ pub fn crack_file(
         let success = success_sender.clone();
         let r2 = r.clone();
         let c2 = cracker_handle.clone();
+        // Arbitrarily chosen multiple of workers
+        let allowed_empties = no_workers*8;
+
         let id: std::thread::JoinHandle<()> = std::thread::spawn(move || {
-            while let Ok(passwd) = r2.recv() {
+            // We will let the first cracking attempt be blocking since the channel will
+            // start as empty.
+            match r2.recv() {
+                Ok(passwd) => {
+                    if c2.attempt(&passwd) {
+                        success.send(passwd).unwrap_or_default();
+                        return;
+                    }
+                },
+                Err(_) => {
+                    // Well, I guess this can happen.
+                    return;
+                },
+            }
+
+            let mut has_warned = allowed_empties;
+            
+            loop {
+                let passwd = if has_warned > 0{
+                    match r2.try_recv() {
+                        Ok(res) => res,
+                        Err(err) =>  {
+                            if matches!(err, TryRecvError::Empty) {
+                                has_warned -= 1;
+                                warn!("Producer is unable to keep up with workers. It would be great if you reported this since it means there is room for optimization.");
+                                continue;
+                            } else {
+                                // Channel is closed
+                                return;
+                            }
+                        },
+                    }
+                } else {
+                    match r2.recv() {
+                        Ok(res) => res,
+                        Err(_) => {
+                            // Channel closed
+                            return;
+                        },
+                    }
+                };
                 if c2.attempt(&passwd) {
                     // inform main thread we found a good password then die
                     success.send(passwd).unwrap_or_default();
